@@ -25,7 +25,7 @@ from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction, QDialog, QVBoxLayout, QTabWidget, QScrollArea
 from PyQt5.QtWidgets import QWidget, QMessageBox, QLabel
 from PyQt5 import QtTest
-from qgis.core import QgsUnitTypes, QgsCoordinateTransform, QgsCoordinateReferenceSystem, QgsPointXY, QgsVectorLayer, QgsProject, QgsLayerTreeGroup, Qgis
+from qgis.core import QgsUnitTypes, QgsCoordinateTransform, QgsCoordinateReferenceSystem, QgsPointXY, QgsVectorLayer, QgsProject, QgsLayerTreeGroup, QgsTask, QgsApplication, Qgis
 from qgis.gui import QgsProjectionSelectionDialog
 
 import os.path
@@ -100,6 +100,8 @@ class TransitionWidget:
         self.canvasCrsDisplayPrecision = None
         self.iface.mapCanvas().destinationCrsChanged.connect(self.setSourceCrs)
         self.setSourceCrs()
+
+        self.backgroundTask = None
 
     def tr(self, message):
         """Get the translation for a string using Qt translation API.
@@ -455,31 +457,29 @@ class TransitionWidget:
         except Exception as error:
             self.iface.messageBar().pushCritical('Error', str(error))
 
-    def onAccessibilityButtonClicked(self):
+    def runAccessibilityRequestTask(self, task, params):
         """
-            Handle the click event on the "Create accessibility map" button.
-
-            This method requests the accessibility map from the Transition server and displays it on the map.
+            Run the accessibility request task.
+            Since this function is executed by QgsTask, we cannot decide the order of the parameters, 
+            even if the 'task' parmater is unused here.
         """
-        try:
-            geojson_data = self.transition_instance.request_accessibility_map(
-                with_geojson=True,
-                departure_or_arrival_choice="Departure" if self.createAccessibilityForm.departureRadioButton.isChecked() else "Arrival",
-                departure_or_arrival_time=self.createAccessibilityForm.departureOrArrivalTime.time().toPyTime(),
-                n_polygons=self.createAccessibilityForm.nPolygons.value(),
-                delta_minutes=self.createAccessibilityForm.delta.value(),
-                delta_interval_minutes=self.createAccessibilityForm.deltaInterval.value(),
-                scenario_id=self.scenarios[self.createAccessibilityForm.scenarioChoice.currentIndex()]['id'],
-                max_total_travel_time_minutes=self.createAccessibilityForm.maxTotalTravelTime.value(),
-                min_waiting_time_minutes=self.createAccessibilityForm.minWaitTime.value(),
-                max_access_egress_travel_time_minutes=self.createAccessibilityForm.maxAccessTimeOrigDest.value(),
-                max_transfer_travel_time_minutes=self.createAccessibilityForm.maxTransferWaitTime.value(),
-                max_first_waiting_time_minutes=self.createAccessibilityForm.maxFirstWaitTime.value() if self.createAccessibilityForm.maxFirstWaitTime.value() > -1 else None,
-                walking_speed_kmh=self.createAccessibilityForm.walkingSpeed.value(),
-                coordinates = [self.selectedCoords['accessibilityMapPoint'].x(), self.selectedCoords['accessibilityMapPoint'].y()]
-            )["result"]
-
-            if geojson_data['polygons']:
+        return self.transition_instance.request_accessibility_map(**params)["result"]
+    
+    def onAccessibilityRequestTaskFinished(self, exception=None, result=None):
+        """
+            Handle the result of the accessibility request task. This fuction should be executed in the main thread.
+        """
+        self.backgroundTask = None
+        if exception:
+            if isinstance(exception, requests.exceptions.HTTPError):
+                if exception.response.text == "DatabaseTokenExpired":
+                    self.handleExpiredToken()
+            else:
+                QgsMessageLog.logMessage("Exception: {}".format(exception),
+                                        'AccessibilityMapTask', Qgis.Critical)
+                self.iface.messageBar().pushCritical('Error', str(exception))
+        else:
+            if result['polygons']:
                 outputLayerName = self.createAccessibilityForm.outputLayerName.text()
                 outputLayerName = outputLayerName if outputLayerName else "Accessibility map results"
 
@@ -500,7 +500,7 @@ class TransitionWidget:
                     group = root.insertGroup(0, outputLayerName)
 
                     # Sort polygons from smallest to largest durations
-                    polygons_coords = sorted(geojson_data['polygons']["features"], key=lambda x: x['properties']['durationSeconds'])
+                    polygons_coords = sorted(result['polygons']["features"], key=lambda x: x['properties']['durationSeconds'])
                     for i, polygon in enumerate(polygons_coords):
                         gdf = gpd.GeoDataFrame.from_features([polygon])
                         layer = QgsVectorLayer(gdf.to_json(), f"Polygon {i+1}", "ogr")
@@ -513,18 +513,39 @@ class TransitionWidget:
                 # Else display all polygons in one single layer
                 else:
                     # Add the new layer
-                    gdf = gpd.GeoDataFrame.from_features(geojson_data['polygons'])
+                    gdf = gpd.GeoDataFrame.from_features(result['polygons'])
                     layer = QgsVectorLayer(gdf.to_json(), outputLayerName, "ogr")
                     if not layer.isValid():
                         raise Exception("Layer failed to load!")
                     QgsProject.instance().addMapLayer(layer)
                     self.setLayerOpacity(layer, 0.6)
-            
-        except requests.exceptions.HTTPError as error:
-            if error.response.text == "DatabaseTokenExpired":
-                self.handleExpiredToken()
-        except Exception as error:
-            self.iface.messageBar().pushCritical('Error', str(error))
+
+    def onAccessibilityButtonClicked(self):
+        """
+            Handle the click event on the "Create accessibility map" button.
+
+            This method requests the accessibility map from the Transition server and displays it on the map.
+        """
+        params = dict(
+                with_geojson=True,
+                departure_or_arrival_choice="Departure" if self.createAccessibilityForm.departureRadioButton.isChecked() else "Arrival",
+                departure_or_arrival_time=self.createAccessibilityForm.departureOrArrivalTime.time().toPyTime(),
+                n_polygons=self.createAccessibilityForm.nPolygons.value(),
+                delta_minutes=self.createAccessibilityForm.delta.value(),
+                delta_interval_minutes=self.createAccessibilityForm.deltaInterval.value(),
+                scenario_id=self.scenarios[self.createAccessibilityForm.scenarioChoice.currentIndex()]['id'],
+                max_total_travel_time_minutes=self.createAccessibilityForm.maxTotalTravelTime.value(),
+                min_waiting_time_minutes=self.createAccessibilityForm.minWaitTime.value(),
+                max_access_egress_travel_time_minutes=self.createAccessibilityForm.maxAccessTimeOrigDest.value(),
+                max_transfer_travel_time_minutes=self.createAccessibilityForm.maxTransferWaitTime.value(),
+                max_first_waiting_time_minutes=self.createAccessibilityForm.maxFirstWaitTime.value() if self.createAccessibilityForm.maxFirstWaitTime.value() > -1 else None,
+                walking_speed_kmh=self.createAccessibilityForm.walkingSpeed.value(),
+                coordinates = [self.selectedCoords['accessibilityMapPoint'].x(), self.selectedCoords['accessibilityMapPoint'].y()]
+        )
+
+        self.backgroundTask = QgsTask.fromFunction('Accessibility request', self.runAccessibilityRequestTask,
+                             on_finished=self.onAccessibilityRequestTaskFinished, params=params)
+        QgsApplication.taskManager().addTask(self.backgroundTask)
 
     def setCrs(self):
         """
