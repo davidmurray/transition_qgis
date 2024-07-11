@@ -29,7 +29,7 @@ from qgis.core import QgsUnitTypes, QgsCoordinateTransform, QgsCoordinateReferen
 from qgis.gui import QgsProjectionSelectionDialog
 
 import os.path
-import geojson
+import geopandas as gpd
 import requests
 from pyTransition import Transition
 
@@ -334,7 +334,8 @@ class TransitionWidget:
                     QgsProject.instance().removeMapLayer(existing_layers[0].id())
 
                 # Add the new "transition_paths" layer
-                layer = QgsVectorLayer(geojson.dumps(geojson_data), "transition_paths", "ogr")
+                gdf = gpd.GeoDataFrame.from_features(geojson_data)
+                layer = QgsVectorLayer(gdf.to_json(), "transition_paths", "ogr")
                 if not layer.isValid():
                     raise Exception("Layer failed to load!")
                 QgsProject.instance().addMapLayer(layer)
@@ -360,7 +361,8 @@ class TransitionWidget:
                     QgsProject.instance().removeMapLayer(existing_layers[0].id())
 
                 # Add the new "transition_nodes" layer
-                layer = QgsVectorLayer(geojson.dumps(geojson_data), "transition_nodes", "ogr")
+                gdf = gpd.GeoDataFrame.from_features(geojson_data)
+                layer = QgsVectorLayer(gdf.to_json(), "transition_nodes", "ogr")
                 if not layer.isValid():
                     raise Exception("Layer failed to load!")
                 QgsProject.instance().addMapLayer(layer)
@@ -424,8 +426,8 @@ class TransitionWidget:
                         transit_paths = mode_data["paths"][0]
                         TransitInformationPanel(transit_paths, self.tab_widget, 0)
 
-                    geojson_data = geojson_paths[0]
-                    layer = QgsVectorLayer(geojson.dumps(geojson_data), mode, "ogr")
+                    gdf = gpd.GeoDataFrame.from_features(geojson_paths[0])
+                    layer = QgsVectorLayer(gdf.to_json(), mode, "ogr")
                     if not layer.isValid():
                         raise Exception("Layer failed to load!")
                     QgsProject.instance().addMapLayer(layer, False)
@@ -440,7 +442,8 @@ class TransitionWidget:
                         geojson_data = geojson_paths[i]
                         transit_paths = mode_data["paths"][i]
                         TransitInformationPanel(transit_paths, self.tab_widget, index)
-                        layer = QgsVectorLayer(geojson.dumps(geojson_data), f"{mode} alternative {index}", "ogr")
+                        gdf = gpd.GeoDataFrame.from_features(geojson_data)
+                        layer = QgsVectorLayer(gdf.to_json(), f"{mode} alternative {index}", "ogr")
                         if not layer.isValid():
                             raise Exception("Layer failed to load!")
                         QgsProject.instance().addMapLayer(layer, False)
@@ -475,9 +478,8 @@ class TransitionWidget:
                 walking_speed_kmh=self.createAccessibilityForm.walkingSpeed.value(),
                 coordinates = [self.selectedCoords['accessibilityMapPoint'].x(), self.selectedCoords['accessibilityMapPoint'].y()]
             )["result"]
-            polygons_geojson = geojson.dumps(geojson_data['polygons'])
 
-            if polygons_geojson:
+            if geojson_data['polygons']:
                 outputLayerName = self.createAccessibilityForm.outputLayerName.text()
                 outputLayerName = outputLayerName if outputLayerName else "Accessibility map results"
 
@@ -500,7 +502,8 @@ class TransitionWidget:
                     # Sort polygons from smallest to largest durations
                     polygons_coords = sorted(geojson_data['polygons']["features"], key=lambda x: x['properties']['durationSeconds'])
                     for i, polygon in enumerate(polygons_coords):
-                        layer = QgsVectorLayer(geojson.dumps(polygon), f"Polygon {i+1}", "ogr")
+                        gdf = gpd.GeoDataFrame.from_features([polygon])
+                        layer = QgsVectorLayer(gdf.to_json(), f"Polygon {i+1}", "ogr")
                         if not layer.isValid():
                             raise Exception("Layer failed to load!")
                         QgsProject.instance().addMapLayer(layer, False)
@@ -510,7 +513,8 @@ class TransitionWidget:
                 # Else display all polygons in one single layer
                 else:
                     # Add the new layer
-                    layer = QgsVectorLayer(polygons_geojson, outputLayerName, "ogr")
+                    gdf = gpd.GeoDataFrame.from_features(geojson_data['polygons'])
+                    layer = QgsVectorLayer(gdf.to_json(), outputLayerName, "ogr")
                     if not layer.isValid():
                         raise Exception("Layer failed to load!")
                     QgsProject.instance().addMapLayer(layer)
